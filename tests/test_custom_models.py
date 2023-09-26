@@ -23,7 +23,7 @@ from parameterized import parameterized
 from torch import nn
 from transformers.pytorch_utils import Conv1D
 
-from peft import AdaLoraConfig, IA3Config, LoraConfig, PeftModel, get_peft_model
+from peft import AdaLoraConfig, IA3Config, LoraConfig, LoHaConfig, PeftModel, get_peft_model
 
 from .testing_common import PeftCommonTester
 from .testing_utils import get_state_dict
@@ -33,6 +33,7 @@ from .testing_utils import get_state_dict
 # EmbConv1D has an embedding and a Conv1D layer
 # Conv2D has a Conv2D layer
 TEST_CASES = [
+    # LoRA
     ("Vanilla MLP 1", "MLP", LoraConfig, {"target_modules": "lin0"}),
     ("Vanilla MLP 2", "MLP", LoraConfig, {"target_modules": ["lin0"]}),
     ("Vanilla MLP 3", "MLP", LoraConfig, {"target_modules": ["lin1"]}),
@@ -53,7 +54,32 @@ TEST_CASES = [
     ("Embedding + transformers Conv1D 3", "EmbConv1D", LoraConfig, {"target_modules": ["emb", "conv1d"]}),
     ("Conv2d 1", "Conv2d", LoraConfig, {"target_modules": ["conv2d"]}),
     ("Conv2d 2", "Conv2d", LoraConfig, {"target_modules": ["conv2d", "lin0"]}),
+
+    # LoHa
+    ("Vanilla MLP 1 LOHA", "MLP", LoHaConfig, {"target_modules": "lin0"}),
+    ("Vanilla MLP 2 LOHA", "MLP", LoHaConfig, {"target_modules": ["lin0"]}),
+    ("Vanilla MLP 3 LOHA", "MLP", LoHaConfig, {"target_modules": ["lin1"]}),
+    ("Vanilla MLP 4 LOHA", "MLP", LoHaConfig, {"target_modules": ["lin0", "lin1"]}),
+    ("Vanilla MLP 5 LOHA", "MLP", LoHaConfig, {"target_modules": ["lin0"], "modules_to_save": ["lin1"]}),
+    (
+        "Vanilla MLP 6 LOHA",
+        "MLP",
+        LoHaConfig,
+        {
+            "target_modules": ["lin0"],
+            "alpha": 4,
+            "module_dropout": 0.1,
+        },
+    ),
+    ("Conv2d 1 LOHA", "Conv2d", LoHaConfig, {"target_modules": ["conv2d"]}),
+    ("Conv2d 2 LOHA", "Conv2d", LoHaConfig, {"target_modules": ["conv2d", "lin0"]}),
+
 ]
+
+PREFIXES = {
+    LoraConfig: "lora_",
+    LoHaConfig: "hada_",
+}
 
 
 class MLP(nn.Module):
@@ -233,9 +259,11 @@ class PeftCustomModelTester(unittest.TestCase, PeftCommonTester):
         params_before = dict(model_before.named_parameters())
         params_after = dict(model.named_parameters())
         self.assertEqual(params_before.keys(), params_after.keys())
+
+        prefix = PREFIXES[config_cls]
         for name, param_before in params_before.items():
             param_after = params_after[name]
-            if ("lora_" in name) or ("modules_to_save" in name):
+            if (prefix in name) or ("modules_to_save" in name):
                 # target_modules and modules_to_save _are_ updated
                 self.assertFalse(torch.allclose(param_before, param_after, atol=tol, rtol=tol))
             else:
@@ -324,6 +352,9 @@ class PeftCustomModelTester(unittest.TestCase, PeftCommonTester):
 
         # Note: We test only with custom models since they run really fast. There is really no point in testing the same
         # thing with decoder, encoder_decoder, etc.
+        if config_cls != LoraConfig:
+            # skip this test for other configs as bias is specific to Lora
+            self.skipTest("Testing bias warnings only for LoraConfig")
 
         def run_with_disable(config_kwargs, bias):
             config_kwargs = config_kwargs.copy()
